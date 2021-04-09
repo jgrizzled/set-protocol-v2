@@ -16,11 +16,15 @@ export const getCurveFixture = (ownerAddress: Address) => new CurveFixture(provi
 export const getCompoundFixture = (ownerAddress: Address) => new CompoundFixture(provider, ownerAddress);
 export const getUniswapFixture = (ownerAddress: Address) => new UniswapFixture(provider, ownerAddress);
 
+export { ForkedTokens } from "./types";
+
 export {
   getAccounts,
   getEthBalance,
   getRandomAccount,
   getRandomAddress,
+  getForkedTokens,
+  initializeForkedTokens,
 } from "./accountUtils";
 export {
   addSnapshotBeforeRestoreAfterEach,
