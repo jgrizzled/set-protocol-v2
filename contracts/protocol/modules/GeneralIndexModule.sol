@@ -27,7 +27,7 @@ import { SafeMath } from "@openzeppelin/contracts/math/SafeMath.sol";
 
 import { AddressArrayUtils } from "../../lib/AddressArrayUtils.sol";
 import { IController } from "../../interfaces/IController.sol";
-import { IExchangeAdapter } from "../../interfaces/IExchangeAdapter.sol";
+import { IIndexExchangeAdapter } from "../../interfaces/IIndexExchangeAdapter.sol";
 import { Invoke } from "../lib/Invoke.sol";
 import { ISetToken } from "../../interfaces/ISetToken.sol";
 import { IWETH } from "../../interfaces/external/IWETH.sol";
@@ -73,6 +73,7 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
         uint256 coolOffPeriod;           // Required time between trades for the asset
         uint256 lastTradeTimestamp;      // Timestamp of last trade
         string exchangeName;             // Name of exchange adapter
+        bytes exchangeData;              // Arbitrary data that can be used to encode exchange specific settings (fee tier) or features (multi-hop)
     }
 
     struct TradePermissionInfo {
@@ -87,16 +88,17 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
     }
 
     struct TradeInfo {
-        ISetToken setToken;                     // Instance of SetToken
-        IExchangeAdapter exchangeAdapter;       // Instance of Exchange Adapter
-        address sendToken;                      // Address of token being sold
-        address receiveToken;                   // Address of token being bought
-        bool isSendTokenFixed;                  // Boolean indicating fixed asset is send token
-        uint256 setTotalSupply;                 // Total supply of Set (in precise units)
-        uint256 totalFixedQuantity;             // Total quanity of fixed asset being traded
-        uint256 floatingQuantityLimit;          // Max/min amount of floating token spent/received during trade
-        uint256 preTradeSendTokenBalance;       // Total initial balance of token being sold
-        uint256 preTradeReceiveTokenBalance;    // Total initial balance of token being bought
+        ISetToken setToken;                         // Instance of SetToken
+        IIndexExchangeAdapter exchangeAdapter;      // Instance of Exchange Adapter
+        address sendToken;                          // Address of token being sold
+        address receiveToken;                       // Address of token being bought
+        bool isSendTokenFixed;                      // Boolean indicating fixed asset is send token
+        uint256 setTotalSupply;                     // Total supply of Set (in precise units)
+        uint256 totalFixedQuantity;                 // Total quanity of fixed asset being traded
+        uint256 floatingQuantityLimit;              // Max/min amount of floating token spent/received during trade
+        uint256 preTradeSendTokenBalance;           // Total initial balance of token being sold
+        uint256 preTradeReceiveTokenBalance;        // Total initial balance of token being bought
+        bytes exchangeData;                         // Arbitrary data for executing trade on given exchange
     }
 
     /* ============ Events ============ */
@@ -105,6 +107,7 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
     event TradeMaximumUpdated(ISetToken indexed _setToken, address indexed _component, uint256 _newMaximum);
     event AssetExchangeUpdated(ISetToken indexed _setToken, address indexed _component, string _newExchangeName);
     event CoolOffPeriodUpdated(ISetToken indexed _setToken, address indexed _component, uint256 _newCoolOffPeriod);
+    event ExchangeDataUpdated(ISetToken indexed _setToken, address indexed _component, bytes _newExchangeData);
     event RaiseTargetPercentageUpdated(ISetToken indexed _setToken, uint256 indexed _raiseTargetPercentage);
 
     event AnyoneTradeUpdated(ISetToken indexed _setToken, bool indexed _status);
@@ -114,7 +117,7 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
         ISetToken indexed _setToken,
         address indexed _sellComponent,
         address indexed _buyComponent,
-        IExchangeAdapter _exchangeAdapter,
+        IIndexExchangeAdapter _exchangeAdapter,
         address _executor,
         uint256 _amountSold,
         uint256 _netAmountBought,
@@ -414,6 +417,32 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
     }
 
     /**
+     * MANAGER ONLY: Set arbitrary byte data on a per asset basis that can be used to pass exchange specific settings (i.e. specifying
+     * fee tiers) or exchange specific features (enabling multi-hop trades). Can be called at any time.
+     *
+     * @param _setToken             Address of the SetToken
+     * @param _components           Array of components
+     * @param _exchangeData         Array of exchange specific arbitrary bytes data
+     */
+    function setExchangeData(
+        ISetToken _setToken,
+        address[] calldata _components,
+        bytes[] calldata _exchangeData
+    )
+        external
+        onlyManagerAndValidSet(_setToken)
+    {
+        require(_components.length == _exchangeData.length, "Array length mismatch");
+        require(_components.length > 0, "Array length must be > 0");
+        require(!_components.hasDuplicate(), "Cannot duplicate components");
+
+        for (uint256 i = 0; i < _components.length; i++) {
+            executionInfo[_setToken][IERC20(_components[i])].exchangeData = _exchangeData[i];
+            emit ExchangeDataUpdated(_setToken, _components[i], _exchangeData[i]);
+        }
+    }
+
+    /**
      * MANAGER ONLY: Set amount by which all component's targets units would be raised. Can be called at any time.
      *
      * @param _setToken                     Address of the SetToken
@@ -597,7 +626,7 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
         TradeInfo memory tradeInfo;
         tradeInfo.setToken = _setToken;
 
-        tradeInfo.exchangeAdapter = IExchangeAdapter(getAndValidateAdapter(executionInfo[_setToken][_component].exchangeName));
+        tradeInfo.exchangeAdapter = IIndexExchangeAdapter(getAndValidateAdapter(executionInfo[_setToken][_component].exchangeName));
 
         (
             tradeInfo.isSendTokenFixed,
@@ -616,6 +645,7 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
             : _ethQuantityLimit.min(tradeInfo.preTradeSendTokenBalance);
 
         tradeInfo.setTotalSupply = totalSupply;
+        tradeInfo.exchangeData = executionInfo[_setToken][_component].exchangeData;
 
         return tradeInfo;
     }
@@ -650,7 +680,7 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
         TradeInfo memory tradeInfo;
         tradeInfo.setToken = _setToken;
 
-        tradeInfo.exchangeAdapter = IExchangeAdapter(getAndValidateAdapter(executionInfo[_setToken][_component].exchangeName));
+        tradeInfo.exchangeAdapter = IIndexExchangeAdapter(getAndValidateAdapter(executionInfo[_setToken][_component].exchangeName));
 
         tradeInfo.isSendTokenFixed = true;
 
@@ -658,6 +688,7 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
         tradeInfo.receiveToken = address(_component);
 
         tradeInfo.setTotalSupply = totalSupply;
+        tradeInfo.exchangeData = executionInfo[_setToken][_component].exchangeData;
 
         tradeInfo.totalFixedQuantity =  currentNotional.sub(targetNotional);
         tradeInfo.floatingQuantityLimit = _componentQuantityLimit;
@@ -683,12 +714,6 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
             _tradeInfo.isSendTokenFixed ? _tradeInfo.totalFixedQuantity : _tradeInfo.floatingQuantityLimit
         );
 
-        bytes memory tradeData = _tradeInfo.exchangeAdapter.generateDataParam(
-            _tradeInfo.sendToken,
-            _tradeInfo.receiveToken,
-            _tradeInfo.isSendTokenFixed
-        );
-
         (
             address targetExchange,
             uint256 callValue,
@@ -697,9 +722,10 @@ contract GeneralIndexModule is ModuleBase, ReentrancyGuard {
             _tradeInfo.sendToken,
             _tradeInfo.receiveToken,
             address(_tradeInfo.setToken),
+            _tradeInfo.isSendTokenFixed,
             _tradeInfo.isSendTokenFixed ? _tradeInfo.totalFixedQuantity : _tradeInfo.floatingQuantityLimit,
             _tradeInfo.isSendTokenFixed ? _tradeInfo.floatingQuantityLimit : _tradeInfo.totalFixedQuantity,
-            tradeData
+            _tradeInfo.exchangeData
         );
 
         _tradeInfo.setToken.invoke(targetExchange, callValue, methodData);
