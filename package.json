@@ -21,6 +21,7 @@
     "compile": "npx hardhat compile",
     "coverage": "yarn clean && yarn build && yarn cov:command",
     "cov:command": "COVERAGE=true node --max-old-space-size=4096 ./node_modules/.bin/hardhat coverage",
+    "deploy-mock": "hardhat run --no-compile scripts/deploy-mock.ts --network localhost",
     "etherscan:verify": "hardhat --network kovan etherscan-verify --solc-input --license 'None'",
     "fix-typechain": "node scripts/fix-typechain.js && yarn rename-extensions",
     "flatten": "npx waffle flatten",
